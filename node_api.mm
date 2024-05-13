@@ -118,10 +118,10 @@ namespace napi {
         char* c_str = (char*)malloc(length);
         napi_get_value_string_utf8(env, value, c_str, 1 + length, nil);
 
-        return [[NSString alloc]
+        return [[[NSString alloc]
           initWithBytesNoCopy: c_str length: length
           encoding: NSUTF8StringEncoding freeWhenDone: true
-        ];
+        ] autorelease];
       }
     #endif
   }
