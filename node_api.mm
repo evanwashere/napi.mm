@@ -4,7 +4,10 @@
 #include <string>
 #include <functional>
 #include "node_api.h"
-#include <Foundation/Foundation.h>
+
+#ifdef __OBJC__
+  #include <Foundation/Foundation.h>
+#endif
 
 #define likely(x)   __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
@@ -14,11 +17,15 @@ namespace napi {
   typedef napi_value value;
   template<typename T> concept PTR = sizeof(T) == sizeof(void*);
 
+  #ifdef __OBJC__
+    napi::value err(const napi::env env, const NSString *str) { napi_throw_error(env, nil, [str UTF8String]); return nil; }
+  #endif
+
+  napi::value null(const napi::env env) { napi::value v; napi_get_null(env, &v); return v; }
   napi::value global(const napi::env env) { napi::value v; napi_get_global(env, &v); return v; }
   napi::value undefined(const napi::env env) { napi::value v; napi_get_undefined(env, &v); return v; }
   napi::value err(const napi::env env, const char *str) { napi_throw_error(env, nil, str); return nil; }
   napi::value err(const napi::env env, const std::string str) { napi_throw_error(env, nil, str.c_str()); return nil; }
-  napi::value err(const napi::env env, const NSString *str) { napi_throw_error(env, nil, [str UTF8String]); return nil; }
   napi_valuetype type(const napi::env env, const napi::value value) { napi_valuetype t; napi_typeof(env, value, &t); return t; }
   bool instanceof(const napi::env env, const napi::value object, const napi::value constructor) { bool b; napi_instanceof(env, object, constructor, &b); return b; }
   napi::value klass(const napi::env env, const char *name, const napi_callback constructor, const std::vector<napi_property_descriptor> properties) { napi::value C; napi_define_class(env, name, NAPI_AUTO_LENGTH, constructor, nil, properties.size(), properties.data(), &C); return C; }
@@ -59,16 +66,19 @@ namespace napi {
   }
 
   namespace object {
+    #ifdef __OBJC__
+      void set(const napi::env env, const napi::value object, const NSString *key, const napi::value value) { napi_set_named_property(env, object, key.UTF8String, value); }
+      napi::value get(const napi::env env, const napi::value object, const NSString *key) { napi::value v; napi_get_named_property(env, object, key.UTF8String, &v); return v; }
+    #endif
+
     napi::value empty(const napi::env env) { napi::value v; napi_create_object(env, &v); return v; }
     void set(const napi::env env, const napi::value object, const napi::value key, const napi::value value) { napi_set_property(env, object, key, value); }
     void set(const napi::env env, const napi::value object, const char* key, const napi::value value) { napi_set_named_property(env, object, key, value); }
     void set(const napi::env env, const napi::value object, const std::string key, const napi::value value) { napi_set_named_property(env, object, key.c_str(), value); }
-    void set(const napi::env env, const napi::value object, const NSString *key, const napi::value value) { napi_set_named_property(env, object, key.UTF8String, value); }
 
     napi::value get(const napi::env env, const napi::value object, const napi::value key) { napi::value v; napi_get_property(env, object, key, &v); return v; }
     napi::value get(const napi::env env, const napi::value object, const char* key) { napi::value v; napi_get_named_property(env, object, key, &v); return v; }
     napi::value get(const napi::env env, const napi::value object, const std::string key) { napi::value v; napi_get_named_property(env, object, key.c_str(), &v); return v; }
-    napi::value get(const napi::env env, const napi::value object, const NSString *key) { napi::value v; napi_get_named_property(env, object, key.UTF8String, &v); return v; }
 
     template<PTR T> using wrap_callback = std::function<void(const napi::env, T)>;
     template<PTR T> T unwrap(const napi::env env, const napi::value object) { T p; napi_unwrap(env, object, reinterpret_cast<void**>(&p)); return p; }
@@ -94,26 +104,30 @@ namespace napi {
   namespace string {
     napi::value from(const napi::env env, const napi::value value) { napi::value v; napi_coerce_to_string(env, value, &v); return v; }
     napi::value from(const napi::env env, const char *str) { napi::value v; napi_create_string_utf8(env, str, strlen(str), &v); return v; }
-    napi::value from(const napi::env env, const NSString *str) { napi::value v; napi_create_string_utf8(env, str.UTF8String, str.length, &v); return v; }
     napi::value from(const napi::env env, const std::string str) { napi::value v; napi_create_string_utf8(env, str.c_str(), str.length(), &v); return v; }
 
-    NSString *to(const napi::env env, napi::value value, const bool coerce = false) {
-      if (coerce) napi_coerce_to_string(env, value, &value);
+    #ifdef __OBJC__
+      napi::value from(const napi::env env, const NSString *str) { napi::value v; napi_create_string_utf8(env, str.UTF8String, str.length, &v); return v; }
 
-      size_t length;
-      napi_get_value_string_utf8(env, value, nil, 0, &length);
+      NSString *to(const napi::env env, napi::value value, const bool coerce = false) {
+        if (coerce) napi_coerce_to_string(env, value, &value);
 
-      char* c_str = (char*)malloc(length);
-      napi_get_value_string_utf8(env, value, c_str, 1 + length, nil);
+        size_t length;
+        napi_get_value_string_utf8(env, value, nil, 0, &length);
 
-      return [[NSString alloc]
-        initWithBytesNoCopy: c_str length: length
-        encoding: NSUTF8StringEncoding freeWhenDone: true
-      ];
-    }
+        char* c_str = (char*)malloc(length);
+        napi_get_value_string_utf8(env, value, c_str, 1 + length, nil);
+
+        return [[NSString alloc]
+          initWithBytesNoCopy: c_str length: length
+          encoding: NSUTF8StringEncoding freeWhenDone: true
+        ];
+      }
+    #endif
   }
 
   namespace function {
+    size_t argc(const napi::env env, const napi_callback_info info) { size_t argc; napi_get_cb_info(env, info, &argc, nil, nil, nil); return argc; }
     napi::value self(const napi::env env, const napi_callback_info info) { napi::value v; napi_get_cb_info(env, info, nil, nil, &v, nil); return v; }
 
     std::vector<napi::value> args(const napi::env env, const napi_callback_info info, size_t argc = 0) {
