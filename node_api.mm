@@ -4,6 +4,7 @@
 #include <string>
 #include <functional>
 #include "node_api.h"
+#include <unordered_map>
 
 #ifdef __OBJC__
   #include <Foundation/Foundation.h>
@@ -44,12 +45,18 @@ namespace napi {
 
   namespace number {
     double to(const napi::env env, const napi::value value) { double d; napi_get_value_double(env, value, &d); return d; }
+    napi::value from(const napi::env env, const int64_t value) { napi::value v; napi_create_int64(env, value, &v); return v;}
     napi::value from(const napi::env env, const double value) { napi::value v; napi_create_double(env, value, &v); return v; }
     napi::value from(const napi::env env, const int32_t value) { napi::value v; napi_create_int32(env, value, &v); return v; }
     int32_t to_i32(const napi::env env, const napi::value value) { int32_t i; napi_get_value_int32(env, value, &i); return i; }
     int64_t to_i64(const napi::env env, const napi::value value) { int64_t i; napi_get_value_int64(env, value, &i); return i; }
     napi::value from(const napi::env env, const uint32_t value) { napi::value v; napi_create_uint32(env, value, &v); return v; }
     uint32_t to_u32(const napi::env env, const napi::value value) { uint32_t i; napi_get_value_uint32(env, value, &i); return i; }
+
+    #if __OBJC__
+      napi::value from(const napi::env env, const NSInteger value) { return napi::number::from(env, (int64_t)value); }
+      napi::value from(const napi::env env, const NSUInteger value) { return napi::number::from(env, (int64_t)value); }
+    #endif
   }
 
   namespace alloc {
@@ -85,10 +92,20 @@ namespace napi {
     template<PTR T> void wrap(const napi::env env, const napi::value object, T ptr) { napi_wrap(env, object, reinterpret_cast<void*>(ptr), nil, nil, nil); }
     template <PTR T> void wrap_finalizer(const napi::env env, void* ptr, void* function) { auto p = (wrap_callback<T>*)function; (*p)(env, reinterpret_cast<T>(ptr)); delete p; }
     template<PTR T> void wrap(const napi::env env, const napi::value object, T ptr, const wrap_callback<T> finalizer) { napi_wrap(env, object, reinterpret_cast<void*>(ptr), wrap_finalizer<T>, new wrap_callback<T>(finalizer), nil); }
+
+    napi::value from(const napi::env env, const std::unordered_map<std::string, napi::value> properties) {
+      napi::value object = napi::object::empty(env);
+      for (auto [key, value] : properties) napi::object::set(env, object, key, value);
+
+      return object;
+    }
   }
 
   namespace slice {
     bool is(const napi::env env, const napi::value value) { bool b; napi_is_typedarray(env, value, &b); return b; }
+    void* ptr(const napi::env env, const napi::value value) { void *p; napi_get_typedarray_info(env, value, nil, nil, &p, nil, nil); return p; }
+    size_t length(const napi::env env, const napi::value value) { size_t l; napi_get_typedarray_info(env, value, nil, &l, nil, nil, nil); return l; }
+    napi::value ab(const napi::env env, const napi::value value) { napi::value v; napi_get_typedarray_info(env, value, nil, nil, nil, &v, nil); return v; }
     napi::value i8(const napi::env env, const napi::value ab, const size_t offset, const size_t length) { napi::value v; napi_create_typedarray(env, napi_int8_array, length, ab, offset, &v); return v; }
     napi::value u8(const napi::env env, const napi::value ab, const size_t offset, const size_t length) { napi::value v; napi_create_typedarray(env, napi_uint8_array, length, ab, offset, &v); return v; }
     napi::value i16(const napi::env env, const napi::value ab, const size_t offset, const size_t length) { napi::value v; napi_create_typedarray(env, napi_int16_array, length, ab, offset, &v); return v; }
@@ -99,6 +116,18 @@ namespace napi {
     napi::value f64(const napi::env env, const napi::value ab, const size_t offset, const size_t length) { napi::value v; napi_create_typedarray(env, napi_float64_array, length, ab, offset, &v); return v; }
     napi::value i64(const napi::env env, const napi::value ab, const size_t offset, const size_t length) { napi::value v; napi_create_typedarray(env, napi_bigint64_array, length, ab, offset, &v); return v; }
     napi::value u64(const napi::env env, const napi::value ab, const size_t offset, const size_t length) { napi::value v; napi_create_typedarray(env, napi_biguint64_array, length, ab, offset, &v); return v; }
+
+    size_t blength(const napi::env env, const napi::value value) {
+      size_t l; napi_typedarray_type t;
+      napi_get_typedarray_info(env, value, &t, &l, nil, nil, nil);
+
+      if (t == napi_int8_array || t == napi_uint8_array) return l;
+      if (t == napi_int16_array || t == napi_uint16_array) return 2 * l;
+      if (t == napi_int32_array || t == napi_uint32_array || t == napi_float32_array) return 4 * l;
+      if (t == napi_bigint64_array || t == napi_biguint64_array || t == napi_float64_array) return 8 * l;
+
+      __builtin_unreachable();
+    }
   }
 
   namespace string {
@@ -129,12 +158,11 @@ namespace napi {
   namespace function {
     size_t argc(const napi::env env, const napi_callback_info info) { size_t argc; napi_get_cb_info(env, info, &argc, nil, nil, nil); return argc; }
     napi::value self(const napi::env env, const napi_callback_info info) { napi::value v; napi_get_cb_info(env, info, nil, nil, &v, nil); return v; }
+    napi::value from(const napi::env env, const char* name, const napi_callback callback) { napi::value v; napi_create_function(env, name, NAPI_AUTO_LENGTH, callback, nil, &v); return v; }
 
     std::vector<napi::value> args(const napi::env env, const napi_callback_info info, size_t argc = 0) {
       std::vector<napi::value> args(argc);
-      napi_get_cb_info(env, info, &argc, args.data(), nil, nil);
-
-      return args;
+      napi_get_cb_info(env, info, &argc, args.data(), nil, nil); return args;
     }
 
     std::vector<napi::value> args(const napi::env env, const napi_callback_info info) {
@@ -142,9 +170,7 @@ namespace napi {
       napi_get_cb_info(env, info, &argc, nil, nil, nil);
 
       std::vector<napi::value> args(argc);
-      napi_get_cb_info(env, info, &argc, args.data(), nil, nil);
-
-      return args;
+      napi_get_cb_info(env, info, &argc, args.data(), nil, nil); return args;
     }
   }
 
@@ -152,6 +178,7 @@ namespace napi {
     using iterator_callback = std::function<void(const napi::env, const uint32_t, const napi::value)>;
 
     napi::value empty(const napi::env env) { napi::value v; napi_create_array(env, &v); return v; }
+    bool is(const napi::env env, const napi::value value) { bool b; napi_is_array(env, value, &b); return b; }
     uint32_t length(const napi::env env, const napi::value array) { uint32_t l; napi_get_array_length(env, array, &l); return l; }
     napi::value zeroed(const napi::env env, const uint32_t length) { napi::value v; napi_create_array_with_length(env, length, &v); return v; }
     void push(const napi::env env, const napi::value array, const napi::value value) { napi_set_element(env, array, length(env, array), value); }
