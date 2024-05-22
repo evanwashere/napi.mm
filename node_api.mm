@@ -1,3 +1,4 @@
+#include <stdexcept>
 #define NAPI_VERSION 6
 
 #include <vector>
@@ -222,19 +223,19 @@ namespace napi {
   }
 
   namespace async {
-    template <PTR T> using work_callback = std::function<T()>;
     template <PTR T> using finalizer_callback = std::function<napi::value(const napi::env, T)>;
+    template <PTR T> using work_callback = std::function<std::variant<T, std::runtime_error>()>;
 
     template <PTR T> napi::value create(const napi::env env, const char* name, const work_callback<T> work, const finalizer_callback<T> finalizer) {
       auto wp = new work_callback<T>(work);
       auto fp = new finalizer_callback<T>(finalizer);
 
       struct Refs {
-        T r;
         napi_deferred d;
         napi_async_work h;
         work_callback<T> *w;
         finalizer_callback<T> *f;
+        std::variant<T, std::runtime_error> r;
       };
 
       auto refs = new Refs{.w = wp, .f = fp};
@@ -256,10 +257,17 @@ namespace napi {
           auto wp = (work_callback<T>*)p->w;
           auto fp = (finalizer_callback<T>*)p->f;
 
-          auto r = (*fp)(env, p->r);
-          bool e; napi_is_exception_pending(env, &e);
-          if (likely(!e)) napi_resolve_deferred(env, p->d, r);
-          else { napi_get_and_clear_last_exception(env, &err); napi_reject_deferred(env, p->d, err); }
+          if (p->r.index() == 1) {
+            auto e = std::get<std::runtime_error>(p->r);
+            napi_create_error(env, nil, napi::string::from(env, e.what()), &err);
+
+            napi_reject_deferred(env, p->d, err);
+          } else {
+            auto r = (*fp)(env, std::get<T>(p->r));
+            bool e; napi_is_exception_pending(env, &e);
+            if (likely(!e)) napi_resolve_deferred(env, p->d, r);
+            else { napi_get_and_clear_last_exception(env, &err); napi_reject_deferred(env, p->d, err); }
+          }
 
           napi_delete_async_work(env, p->h); delete p; delete wp; delete fp;
         },
