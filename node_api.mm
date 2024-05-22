@@ -1,8 +1,8 @@
-#include <stdexcept>
 #define NAPI_VERSION 6
 
 #include <vector>
 #include <string>
+#include <stdexcept>
 #include <functional>
 #include "node_api.h"
 #include <unordered_map>
