@@ -61,16 +61,16 @@ namespace napi {
   }
 
   namespace alloc {
-    using finalizer_callback = std::function<void(const napi::env, void*)>;
+    using finalizer_callback = void(const napi::env, void*);
 
     bool is(const napi::env env, const napi::value value) { bool b; napi_is_arraybuffer(env, value, &b); return b; }
     void* ptr(const napi::env env, const napi::value value) { void *p; size_t l; napi_get_arraybuffer_info(env, value, &p, &l); return p; }
     napi::value zeroed(const napi::env env, const size_t length) { napi::value v; napi_create_arraybuffer(env, length, nil, &v); return v; }
     size_t length(const napi::env env, const napi::value value) { void *p; size_t l; napi_get_arraybuffer_info(env, value, &p, &l); return l; }
-    void finalizer_finalizer(napi::env env, void *ptr, void *f) { auto finalizer = (finalizer_callback*)f; (*finalizer)(env, ptr); delete finalizer; }
     napi::value from(const napi::env env, const size_t length, void *ptr) { napi::value v; napi_create_external_arraybuffer(env, ptr, length, nil, nil, &v); return v; }
     napi::value copy(const napi::env env, const size_t length, void *ptr) { napi::value v; void *p; napi_create_arraybuffer(env, length, &p, &v); memcpy(p, ptr, length); return v; }
-    napi::value from(const napi::env env, const size_t length, void *ptr, const finalizer_callback finalizer) { napi::value v; auto f = new finalizer_callback(finalizer); napi_create_external_arraybuffer(env, ptr, length, finalizer_finalizer, f, &v); return v; }
+    napi::value from(const napi::env env, const size_t length, void *ptr, void *hint, const node_api_nogc_finalize finalizer) { napi::value v; napi_create_external_arraybuffer(env, ptr, length, finalizer, hint, &v); return v; }
+    napi::value from(const napi::env env, const size_t length, void *ptr, finalizer_callback finalizer) { napi::value v; napi_create_external_arraybuffer(env, ptr, length, [](auto env, auto ptr, auto hint) { (*(finalizer_callback*)hint)(env, ptr); }, (void*)finalizer, &v); return v; }
   }
 
   namespace object {
@@ -107,6 +107,7 @@ namespace napi {
     void* ptr(const napi::env env, const napi::value value) { void *p; napi_get_typedarray_info(env, value, nil, nil, &p, nil, nil); return p; }
     size_t length(const napi::env env, const napi::value value) { size_t l; napi_get_typedarray_info(env, value, nil, &l, nil, nil, nil); return l; }
     napi::value ab(const napi::env env, const napi::value value) { napi::value v; napi_get_typedarray_info(env, value, nil, nil, nil, &v, nil); return v; }
+    std::tuple<void*, size_t> info(const napi::env env, const napi::value value) { void *p; size_t l; napi_get_typedarray_info(env, value, nil, &l, &p, nil, nil); return {p, l}; }
     napi::value i8(const napi::env env, const napi::value ab, const size_t offset, const size_t length) { napi::value v; napi_create_typedarray(env, napi_int8_array, length, ab, offset, &v); return v; }
     napi::value u8(const napi::env env, const napi::value ab, const size_t offset, const size_t length) { napi::value v; napi_create_typedarray(env, napi_uint8_array, length, ab, offset, &v); return v; }
     napi::value i16(const napi::env env, const napi::value ab, const size_t offset, const size_t length) { napi::value v; napi_create_typedarray(env, napi_int16_array, length, ab, offset, &v); return v; }
@@ -224,13 +225,14 @@ namespace napi {
 
   namespace async {
     template <PTR T> using finalizer_callback = std::function<napi::value(const napi::env, T)>;
-    template <PTR T> using work_callback = std::function<std::variant<T, std::runtime_error>()>;
+    template <PTR T> using work_callback = std::function<std::variant<T, std::runtime_error>(void*)>;
 
-    template <PTR T> napi::value create(const napi::env env, const char* name, const work_callback<T> work, const finalizer_callback<T> finalizer) {
+    template <PTR T> napi::value create(const napi::env env, const char* name, void* ptr, const work_callback<T> work, const finalizer_callback<T> finalizer) {
       auto wp = new work_callback<T>(work);
       auto fp = new finalizer_callback<T>(finalizer);
 
       struct Refs {
+        void* p;
         napi_deferred d;
         napi_async_work h;
         work_callback<T> *w;
@@ -238,17 +240,15 @@ namespace napi {
         std::variant<T, std::runtime_error> r;
       };
 
-      auto refs = new Refs{.w = wp, .f = fp};
-
-      napi::value p;
-      napi_create_promise(env, &refs->d, &p);
+      auto refs = new Refs{.w = wp, .f = fp, .p = ptr};
+      napi::value p; napi_create_promise(env, &refs->d, &p);
 
       napi_create_async_work(env, nil, napi::string::from(env, name),
         [](auto env, auto ptr) {
           auto p = (Refs*)ptr;
           auto wp = (work_callback<T>*)p->w;
 
-          p->r = (*wp)();
+          p->r = (*wp)(p->p);
         },
 
         [](auto env, napi_status _, auto ptr) {
